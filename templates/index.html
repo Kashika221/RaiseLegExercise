@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Fitness Trainer</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; text-align: center; background: #222; color: white; margin: 0; padding: 20px; }
+        
+        .container { max_width: 1200px; margin: 0 auto; }
+        
+        .input-group { background: #333; padding: 20px; border-radius: 10px; margin-bottom: 20px; display: inline-block; }
+        input { padding: 10px; border-radius: 5px; border: none; }
+        
+        /* --- Video Wrapper & Sizing Classes --- */
+        .video-wrapper { 
+            position: relative; 
+            margin: 0 auto; 
+            background: #000; 
+            border-radius: 8px; 
+            overflow: hidden; 
+            transition: all 0.3s ease;
+            border: 2px solid #555;
+            
+            /* Default to Medium */
+            width: 800px; 
+            height: 600px; 
+        }
+
+        .size-small { width: 400px; height: 300px; }
+        .size-medium { width: 800px; height: 600px; }
+        .size-large { width: 100%; max-width: 1200px; height: auto; aspect-ratio: 4/3; }
+
+        /* Hide the raw webcam video, show the processed canvas/image */
+        #webcam { display: none; }
+        
+        #outputImage { 
+            width: 100%; 
+            height: 100%; 
+            object-fit: contain; 
+            display: none; /* Hidden until stream starts */
+        }
+        
+        /* Show image when streaming */
+        .streaming-active { display: block !important; }
+
+        /* --- Buttons --- */
+        button { padding: 10px 20px; font-weight: bold; cursor: pointer; border: none; border-radius: 5px; margin: 5px; transition: 0.2s; }
+        .btn-blue { background: #007bff; color: white; }
+        .btn-green { background: #28a745; color: white; }
+        .btn-red { background: #dc3545; color: white; }
+        .btn-gray { background: #6c757d; color: white; }
+        button:hover { opacity: 0.8; }
+
+        .controls-bar { margin-top: 15px; padding: 10px; background: #333; border-radius: 8px; display: inline-block; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>AI Side Leg Raise Tracker</h1>
+        
+        <div class="input-group">
+            <label>User ID: </label>
+            <input type="text" id="userId" placeholder="Enter Name">
+            <button class="btn-blue" onclick="connectSocket()">Connect Camera</button>
+        </div>
+
+        <div id="videoContainer" class="video-wrapper size-medium">
+            <video id="webcam" autoplay playsinline></video>
+            <canvas id="canvas" style="display:none;"></canvas>
+            <img id="outputImage" src="" alt="Waiting for stream...">
+        </div>
+
+        <div class="controls-bar">
+            <button class="btn-gray" onclick="resizeVideo('small')">Small</button>
+            <button class="btn-gray" onclick="resizeVideo('medium')">Medium</button>
+            <button class="btn-gray" onclick="resizeVideo('large')">Large</button>
+            <button class="btn-blue" onclick="toggleFullscreen()">⛶ Fullscreen</button>
+            <br><br>
+            <button class="btn-green" onclick="controlExercise('start')">▶ START</button>
+            <button class="btn-red" onclick="controlExercise('stop')">⏹ STOP & SAVE</button>
+        </div>
+        
+        <p id="statusMsg" style="margin-top: 10px; color: yellow;"></p>
+    </div>
+
+    <script>
+        let currentUserId = "";
+        let ws = null;
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const outputImg = document.getElementById('outputImage');
+        let streaming = false;
+
+        // --- WebSocket Logic ---
+        async function connectSocket() {
+            currentUserId = document.getElementById("userId").value;
+            if(!currentUserId) { alert("Please enter a User ID"); return; }
+
+            // 1. Get Webcam Access
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+                video.srcObject = stream;
+                await video.play();
+            } catch (err) {
+                alert("Error accessing webcam: " + err);
+                return;
+            }
+
+            // 2. Open WebSocket to Server
+            const protocol = window.location.protocol === "https:" ? "wss://" : "ws://";
+            const wsUrl = `${protocol}${window.location.host}/ws/${currentUserId}`;
+            
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                document.getElementById("statusMsg").innerText = "Connected! AI Processing Active.";
+                streaming = true;
+                sendFrame(); 
+            };
+
+            ws.onmessage = (event) => {
+                outputImg.src = event.data;
+                outputImg.classList.add("streaming-active"); // Show the image tag
+                if (streaming) requestAnimationFrame(sendFrame);
+            };
+
+            ws.onclose = () => {
+                document.getElementById("statusMsg").innerText = "Connection Closed";
+                streaming = false;
+            };
+        }
+
+        function sendFrame() {
+            if (!streaming || ws.readyState !== WebSocket.OPEN) return;
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const dataURL = canvas.toDataURL('image/jpeg', 0.6); // Quality 0.6 for speed
+            ws.send(dataURL);
+        }
+
+        async function controlExercise(action) {
+            if(!currentUserId) { alert("Enter User ID first"); return; }
+            const response = await fetch(`/${action}?user_id=${currentUserId}`, { method: 'POST' });
+            const data = await response.json();
+            document.getElementById("statusMsg").innerText = data.message;
+        }
+
+        // --- Resize & Fullscreen Logic ---
+        function resizeVideo(size) {
+            const container = document.getElementById("videoContainer");
+            // Remove existing size classes
+            container.classList.remove("size-small", "size-medium", "size-large");
+            // Add new size class
+            container.classList.add("size-" + size);
+        }
+
+        function toggleFullscreen() {
+            const elem = document.getElementById("outputImage");
+            if (elem.requestFullscreen) {
+                elem.requestFullscreen();
+            } else if (elem.webkitRequestFullscreen) { /* Safari */
+                elem.webkitRequestFullscreen();
+            } else if (elem.msRequestFullscreen) { /* IE11 */
+                elem.msRequestFullscreen();
+            }
+        }
+    </script>
+</body>
+</html>
