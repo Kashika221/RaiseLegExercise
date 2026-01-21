@@ -6,7 +6,7 @@ import pymongo
 import os
 from datetime import datetime
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import StreamingResponse, HTMLResponse
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -23,7 +23,9 @@ try:
     client = pymongo.MongoClient(MONGO_URI)
     db = client[DB_NAME]
     collection = db[COLLECTION_NAME]
-    print("Connected to MongoDB successfully!")
+
+    collection.create_index("user_id", unique = True)
+    print("Connected to MongoDB & Index Verified!")
 except Exception as e:
     print(f"Error connecting to MongoDB: {e}")
 
@@ -78,11 +80,14 @@ def process_frame(frame, user_id):
         session.current_angle = int(knee_r)
 
         if session.is_active:
-            if torso < 20: session.feedback = "Lie straighter!"
-            elif knee_r < 100: session.feedback = "Keep leg straight!"
+            if torso < 20: 
+                session.feedback = "Lie straighter!"
+            elif knee_r < 100: 
+                session.feedback = "Keep leg straight!"
             else:
                 session.feedback = "Form Good"
-                if knee_r > 165: session.stage = "down"
+                if knee_r > 165: 
+                    session.stage = "down"
                 if knee_r < 140 and session.stage == "down":
                     session.stage = "up"
                     session.counter += 1
@@ -99,14 +104,16 @@ def process_frame(frame, user_id):
 
 def generate_frames(user_id):
     cap = cv2.VideoCapture(0)
-    while True:
-        success, frame = cap.read()
-        if not success : break
-        frame = cv2.flip(frame, 1)
-        frame = process_frame(frame, user_id)
-        ret, buffer = cv2.imencode('.jpg', frame)
-        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-    cap.release()
+    try:
+        while True:
+            success, frame = cap.read()
+            if not success: break
+            frame = cv2.flip(frame, 1)
+            frame = process_frame(frame, user_id)
+            ret, buffer = cv2.imencode('.jpg', frame)
+            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+    finally:
+        cap.release()
 
 @app.get("/", response_class = HTMLResponse)
 async def index():
@@ -219,12 +226,12 @@ async def index():
     return HTMLResponse(content=html_content)
 
 @app.get("/video_feed")
-async def video_feed(user_id: str):
+async def video_feed(user_id : str):
     return StreamingResponse(generate_frames(user_id), media_type = "multipart/x-mixed-replace; boundary=frame")
 
 @app.post("/start")
 async def start_exercise(user_id : str):
-    if user_id not in sessions : sessions[user_id] = UserSession()
+    if user_id not in sessions: sessions[user_id] = UserSession()
     sessions[user_id].is_active = True
     sessions[user_id].start_time = time.time()
     sessions[user_id].counter = 0
@@ -233,20 +240,58 @@ async def start_exercise(user_id : str):
 @app.post("/stop")
 async def stop_exercise(user_id : str):
     if user_id not in sessions or not sessions[user_id].is_active:
-        return {"message": "No active session."}
+        return {"message" : "No active session."}
     
     session = sessions[user_id]
-    duration = time.time() - session.start_time
-    
-    doc = {
-        "user_id" : user_id, "exercise" : "Side Leg Raise",
-        "reps" : session.counter, "duration" : round(duration, 2),
-        "date" : datetime.now()
-    }
-    collection.insert_one(doc)
+    current_duration = round(time.time() - session.start_time, 2)
+    current_reps = session.counter
+    timestamp = datetime.now()
+
+    collection.update_one(
+        {"user_id" : user_id}, 
+        {
+            "$setOnInsert" : {
+                "created_at" : timestamp,
+            },
+            "$inc" : {
+                "total_reps" : current_reps,
+                "total_duration" : current_duration
+            },
+            "$push" : {
+                "session_history" : {
+                    "date" : timestamp,
+                    "reps" : current_reps,
+                    "duration" : current_duration
+                }
+            },
+            "$set" : {
+                "last_updated": timestamp
+            }
+        },
+        upsert = True 
+    )
     
     session.is_active = False
-    return {"message" : f"Saved! Reps: {session.counter}"}
+    return {"message" : f"Saved! Added {current_reps} reps to your history."}
+
+@app.post("/progress_report")
+async def report(user_id: str):
+    record = collection.find_one({"user_id" : user_id}, {"_id" : 0})
+    
+    if not record:
+        raise HTTPException(
+            status_code = status.HTTP_404_NOT_FOUND,
+            detail = f"No record found for user: {user_id}"
+        )
+
+    return {
+        "user" : user_id,
+        "summary" : {
+            "total_reps_all_time" : record.get("total_reps", 0),
+            "total_duration_seconds" : record.get("total_duration", 0)
+        },
+        "history" : record.get("session_history", [])
+    }
 
 if __name__ == "__main__":
     import uvicorn
