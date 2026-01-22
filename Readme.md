@@ -2,6 +2,10 @@
 
 An AI-powered fitness application that monitors "Side Leg Raise" exercises in real-time. It uses Computer Vision to correct your form, count repetitions, and track session duration, saving all performance data to a MongoDB database.
 
+### Live Demo
+
+-  https://raiselegexercise.onrender.com
+
 ## Features
 
 * **Real-time Pose Detection:** Uses MediaPipe to track body landmarks with high precision.
