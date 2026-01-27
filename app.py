@@ -44,11 +44,11 @@ except Exception as e:
 base_options = python.BaseOptions(model_asset_path = MODEL_PATH)
 options = vision.PoseLandmarkerOptions(
     base_options = base_options,
-    running_mode = vision.RunningMode.IMAGE,
+    running_mode = vision.RunningMode.VIDEO,
     num_poses = 1,
     min_pose_detection_confidence = 0.5,
     min_tracking_confidence = 0.5,
-    output_segmentation_masks = False
+    #output_segmentation_masks = False
 )
 landmarker = vision.PoseLandmarker.create_from_options(options)
 
@@ -124,7 +124,8 @@ def process_image(frame, user_id):
     session = sessions[user_id]
     
     mp_image = mp.Image(image_format = mp.ImageFormat.SRGB, data = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    detection_result = landmarker.detect(mp_image)
+    timestamp_ms = int(time.time() * 1000)
+    detection_result = landmarker.detect_for_video(mp_image, timestamp_ms)
     h, w, _ = frame.shape
     
     if detection_result.pose_landmarks:
@@ -175,21 +176,28 @@ async def index(request : Request):
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket : WebSocket, user_id : str):
     await websocket.accept()
+    print("websocket accepted .....................")
     try:
+        print("in try .......................")
         while True:
             data = await websocket.receive_text()
+            print("data        ", data)
             if "," in data:
                 header, encoded = data.split(",", 1)
             else:
                 encoded = data
             nparr = np.frombuffer(base64.b64decode(encoded), np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            if frame is None: continue
+            if frame is None: 
+                print("no frame got...................")
+                continue
+            print("reached here yayayyaya........................")
             processed_frame = process_image(frame, user_id)
             _, buffer = cv2.imencode('.jpg', processed_frame)
             jpg_as_text = base64.b64encode(buffer).decode('utf-8')
+            print("frame here ysayaya........................")
             await websocket.send_text(f"data:image/jpeg;base64,{jpg_as_text}")
-            
+         
     except WebSocketDisconnect:
         print(f"Client #{user_id} disconnected")
     except Exception as e:
